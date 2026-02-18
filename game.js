@@ -75,11 +75,20 @@ class ChromaticPipeline extends Phaser.Renderer.WebGL.Pipelines.PostFXPipeline {
         this._offset = 0;
     }
     onPreRender() {
+        if (this._offset < 0.0005) { this._offset = 0; this.set1f("uOffset", 0); return; }
         this.set1f("uOffset", this._offset);
-        this._offset *= 0.92;   // decay
+        this._offset *= 0.92;
     }
     setIntensity(v) { this._offset = v; }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  PERFORMANCE TIER — detect low-end devices once at startup
+// ═══════════════════════════════════════════════════════════════════
+const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+const PERF_LOW = IS_MOBILE || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4);
+const PARTICLE_COUNT = PERF_LOW ? 4 : 12;
+const TWEEN_DURATION_MULT = PERF_LOW ? 0.6 : 1;
 
 // ═══════════════════════════════════════════════════════════════════
 //  MAIN MENU SCENE
@@ -90,8 +99,9 @@ class MainMenu extends Phaser.Scene {
     create() {
         this.cameras.main.setBackgroundColor(0x0a0a12);
 
-        // floating decorative bubbles
-        for (let i = 0; i < 40; i++) {
+        // floating decorative bubbles (fewer on low-end)
+        const bubCount = PERF_LOW ? 12 : 40;
+        for (let i = 0; i < bubCount; i++) {
             const c = Phaser.Math.RND.pick(COLORS);
             const r = Phaser.Math.Between(4, 14);
             const bub = this.add.circle(
@@ -390,13 +400,17 @@ class GameScene extends Phaser.Scene {
                 return;
             }
 
-            // Collision with grid bubbles
-            for (let r = 0; r < ROWS; r++) {
+            // Collision with grid bubbles (only check nearby rows)
+            const approxR = Math.round((p.y - GRID_TOP) / ROW_H);
+            const rLo = Math.max(0, approxR - 1);
+            const rHi = Math.min(ROWS - 1, approxR + 1);
+            const collDistSq = BUBBLE_D * 0.9 * BUBBLE_D * 0.9;
+            for (let r = rLo; r <= rHi; r++) {
                 for (let c = 0; c < this.grid[r].length; c++) {
                     const b = this.grid[r][c];
                     if (!b) continue;
-                    const dist = Phaser.Math.Distance.Between(p.x, p.y, b.x, b.y);
-                    if (dist < BUBBLE_D * 0.9) {
+                    const ddx = p.x - b.x; const ddy = p.y - b.y;
+                    if (ddx * ddx + ddy * ddy < collDistSq) {
                         this.snapAndProcess(p);
                         return;
                     }
@@ -412,84 +426,88 @@ class GameScene extends Phaser.Scene {
             }
         }
 
-        // ── Aim line with bounce prediction ─────────────────────
-        this.aimGraphics.clear();
+        // ── Aim line with bounce prediction (throttled) ────────
         if (!this.isShooting && this.projectile) {
             const ptr = this.input.activePointer;
-            // On mobile, only show aim while touching
-            if (this.isMobile && !ptr.isDown) {
-                // Don't draw aim line if not touching on mobile
+            const showAim = this.isMobile ? ptr.isDown : true;
+            if (!showAim) {
+                this.aimGraphics.clear();
             } else {
-                const px = this.projectile.x;
-                const py = this.projectile.y;
-                let angle = Math.atan2(ptr.y - py, ptr.x - px);
-                angle = Phaser.Math.Clamp(angle, -Math.PI + 0.15, -0.15);
-
-                // Simulate projectile path with wall bounces
-                const points = this.computeTrajectory(px, py, angle);
-
-                // Draw trajectory
-                if (points.length >= 2) {
-                    // Solid line for first segment
-                    this.aimGraphics.lineStyle(2, 0xffffff, 0.5);
-                    this.aimGraphics.beginPath();
-                    this.aimGraphics.moveTo(points[0].x, points[0].y);
-                    for (let i = 1; i < points.length; i++) {
-                        this.aimGraphics.lineTo(points[i].x, points[i].y);
-                    }
-                    this.aimGraphics.strokePath();
-
-                    // Draw dots along the path for visibility
-                    let accumulated = 0;
-                    for (let i = 1; i < points.length; i++) {
-                        const segLen = Phaser.Math.Distance.Between(
-                            points[i - 1].x, points[i - 1].y,
-                            points[i].x, points[i].y
-                        );
-                        const dotSpacing = 24;
-                        const numDots = Math.floor(segLen / dotSpacing);
-                        for (let d = 1; d <= numDots; d++) {
-                            const t = d / (numDots + 1);
-                            const dx = Phaser.Math.Linear(points[i - 1].x, points[i].x, t);
-                            const dy = Phaser.Math.Linear(points[i - 1].y, points[i].y, t);
-                            const alpha = 0.4 - (accumulated + segLen * t) * 0.0004;
-                            if (alpha > 0.05) {
-                                this.aimGraphics.fillStyle(0xffffff, alpha);
-                                this.aimGraphics.fillCircle(dx, dy, 2.5);
-                            }
+                // Throttle: only redraw if pointer moved > 2px
+                const lastPx = this._lastAimX || 0;
+                const lastPy = this._lastAimY || 0;
+                const dx = ptr.x - lastPx;
+                const dy = ptr.y - lastPy;
+                if (dx * dx + dy * dy > 4) {
+                    this._lastAimX = ptr.x;
+                    this._lastAimY = ptr.y;
+                    this.aimGraphics.clear();
+                    const px = this.projectile.x;
+                    const py = this.projectile.y;
+                    let angle = Math.atan2(ptr.y - py, ptr.x - px);
+                    angle = Phaser.Math.Clamp(angle, -Math.PI + 0.15, -0.15);
+                    const points = this.computeTrajectory(px, py, angle);
+                    if (points.length >= 2) {
+                        // Solid line
+                        this.aimGraphics.lineStyle(2, 0xffffff, 0.5);
+                        this.aimGraphics.beginPath();
+                        this.aimGraphics.moveTo(points[0].x, points[0].y);
+                        for (let i = 1; i < points.length; i++) {
+                            this.aimGraphics.lineTo(points[i].x, points[i].y);
                         }
-                        accumulated += segLen;
+                        this.aimGraphics.strokePath();
+                        // Dots (fewer on mobile)
+                        const dotSpacing = IS_MOBILE ? 40 : 24;
+                        let accumulated = 0;
+                        for (let i = 1; i < points.length; i++) {
+                            const sx = points[i].x - points[i - 1].x;
+                            const sy = points[i].y - points[i - 1].y;
+                            const segLen = Math.sqrt(sx * sx + sy * sy);
+                            const numDots = Math.floor(segLen / dotSpacing);
+                            for (let d = 1; d <= numDots; d++) {
+                                const t = d / (numDots + 1);
+                                const ddx = points[i - 1].x + sx * t;
+                                const ddy = points[i - 1].y + sy * t;
+                                const alpha = 0.4 - (accumulated + segLen * t) * 0.0004;
+                                if (alpha > 0.05) {
+                                    this.aimGraphics.fillStyle(0xffffff, alpha);
+                                    this.aimGraphics.fillCircle(ddx, ddy, 2.5);
+                                }
+                            }
+                            accumulated += segLen;
+                        }
+                        // Crosshair at endpoint
+                        const end = points[points.length - 1];
+                        this.aimGraphics.lineStyle(1.5, 0xffffff, 0.6);
+                        this.aimGraphics.strokeCircle(end.x, end.y, BUBBLE_R);
+                        this.aimGraphics.lineStyle(1, 0xffffff, 0.3);
+                        this.aimGraphics.strokeCircle(end.x, end.y, BUBBLE_R * 0.4);
+                        this.aimGraphics.lineStyle(1, 0xffffff, 0.6);
+                        this.aimGraphics.beginPath();
+                        this.aimGraphics.moveTo(end.x - 5, end.y);
+                        this.aimGraphics.lineTo(end.x + 5, end.y);
+                        this.aimGraphics.moveTo(end.x, end.y - 5);
+                        this.aimGraphics.lineTo(end.x, end.y + 5);
+                        this.aimGraphics.strokePath();
                     }
-
-                    // Draw crosshair/target circle at end point
-                    const end = points[points.length - 1];
-                    const crossAlpha = 0.6;
-                    this.aimGraphics.lineStyle(1.5, 0xffffff, crossAlpha);
-                    this.aimGraphics.strokeCircle(end.x, end.y, BUBBLE_R);
-                    this.aimGraphics.lineStyle(1, 0xffffff, crossAlpha * 0.5);
-                    this.aimGraphics.strokeCircle(end.x, end.y, BUBBLE_R * 0.4);
-                    // Small cross
-                    this.aimGraphics.lineStyle(1, 0xffffff, crossAlpha);
-                    this.aimGraphics.beginPath();
-                    this.aimGraphics.moveTo(end.x - 5, end.y);
-                    this.aimGraphics.lineTo(end.x + 5, end.y);
-                    this.aimGraphics.moveTo(end.x, end.y - 5);
-                    this.aimGraphics.lineTo(end.x, end.y + 5);
-                    this.aimGraphics.strokePath();
                 }
             }
+        } else {
+            this.aimGraphics.clear();
         }
     }
 
-    // ── Trajectory prediction with wall bounces ────────────────
+    // ── Trajectory prediction with wall bounces (optimized) ───
     computeTrajectory(startX, startY, angle) {
         const points = [{ x: startX, y: startY }];
         let cx = startX;
         let cy = startY;
         let vx = Math.cos(angle);
         let vy = Math.sin(angle);
-        const step = 4; // ray march step size
-        const maxSteps = 600; // prevent infinite loops
+        const step = IS_MOBILE ? 8 : 4;
+        const maxSteps = IS_MOBILE ? 200 : 600;
+        const collDist = BUBBLE_D * 0.9;
+        const collDistSq = collDist * collDist;
 
         for (let i = 0; i < maxSteps; i++) {
             cx += vx * step;
@@ -512,17 +530,19 @@ class GameScene extends Phaser.Scene {
                 break;
             }
 
-            // Hit a bubble in the grid
+            // Hit a bubble — only check nearby rows (not entire grid)
+            const approxRow = Math.round((cy - GRID_TOP) / ROW_H);
+            const rMin = Math.max(0, approxRow - 1);
+            const rMax = Math.min(ROWS - 1, approxRow + 1);
             let hitBubble = false;
-            for (let r = 0; r < ROWS; r++) {
+            for (let r = rMin; r <= rMax; r++) {
                 if (!this.grid[r]) continue;
                 for (let c = 0; c < COLS; c++) {
-                    const bub = this.grid[r] ? this.grid[r][c] : null;
+                    const bub = this.grid[r][c];
                     if (!bub) continue;
-                    const bx = bub.x;
-                    const by = bub.y;
-                    const dist = Math.sqrt((cx - bx) * (cx - bx) + (cy - by) * (cy - by));
-                    if (dist < BUBBLE_D * 0.9) {
+                    const ddx = cx - bub.x;
+                    const ddy = cy - bub.y;
+                    if (ddx * ddx + ddy * ddy < collDistSq) {
                         points.push({ x: cx, y: cy });
                         hitBubble = true;
                         break;
@@ -1253,24 +1273,20 @@ class GameScene extends Phaser.Scene {
     }
 
     burstParticles(x, y, color, count) {
-        for (let i = 0; i < count; i++) {
-            const p = this.add.rectangle(
-                x, y,
-                Phaser.Math.Between(3, 7), Phaser.Math.Between(3, 7),
-                color, 1
-            );
+        const actual = PERF_LOW ? Math.min(count, PARTICLE_COUNT) : count;
+        const durMult = TWEEN_DURATION_MULT;
+        for (let i = 0; i < actual; i++) {
+            const sz = Phaser.Math.Between(3, 7);
+            const p = this.add.rectangle(x, y, sz, sz, color, 1);
             const angle = Math.random() * Math.PI * 2;
             const speed = 80 + Math.random() * 200;
-            const tx = x + Math.cos(angle) * speed;
-            const ty = y + Math.sin(angle) * speed;
-
             this.tweens.add({
                 targets: p,
-                x: tx, y: ty,
-                alpha: 0,
-                scaleX: 0, scaleY: 0,
+                x: x + Math.cos(angle) * speed,
+                y: y + Math.sin(angle) * speed,
+                alpha: 0, scaleX: 0, scaleY: 0,
                 rotation: Phaser.Math.FloatBetween(-4, 4),
-                duration: 300 + Math.random() * 400,
+                duration: (300 + Math.random() * 400) * durMult,
                 ease: "Quad.easeOut",
                 onComplete: () => p.destroy()
             });
@@ -1283,9 +1299,13 @@ class GameScene extends Phaser.Scene {
 // ═══════════════════════════════════════════════════════════════════
 const config = {
     type: Phaser.AUTO,
-    width: GAME_W,
-    height: GAME_H,
-    parent: "game",
+    scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+        width: GAME_W,
+        height: GAME_H,
+        parent: "game",
+    },
     backgroundColor: "#0a0a12",
     scene: [MainMenu, GameScene],
     pipeline: { ChromaticPipeline },
