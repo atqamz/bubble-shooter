@@ -241,16 +241,46 @@ class GameScene extends Phaser.Scene {
         this.scoreText = this.add.text(10, 8, "SCORE: 0", {
             fontFamily: "monospace", fontSize: "16px", fontStyle: "bold",
             color: "#00ffcc"
-        });
+        }).setDepth(100);
+
         this.comboText = this.add.text(GAME_W / 2, 8, "", {
             fontFamily: "monospace", fontSize: "16px", fontStyle: "bold",
             color: "#ffee00"
-        }).setOrigin(0.5, 0);
+        }).setOrigin(0.5, 0).setDepth(100);
+
         this.levelText = this.add.text(GAME_W - 10, 8, "LVL 1", {
             fontFamily: "monospace", fontSize: "16px", fontStyle: "bold",
             color: "#ff7700"
-        }).setOrigin(1, 0);
+        }).setOrigin(1, 0).setDepth(100);
 
+        // --- UPDATED: PAUSE BUTTON (WITH BACKGROUND AND DEPTH) ---
+        // 1. Create a clickable background box
+        this.pauseBtnBg = this.add.rectangle(GAME_W - 10, GAME_H - 44, 80, 24, 0x000000, 0.5)
+            .setOrigin(1, 0)
+            .setStrokeStyle(1, 0x00ffcc)
+            .setDepth(100)
+            .setInteractive({ useHandCursor: true });
+
+        // 2. Create the button text
+        this.pauseBtnText = this.add.text(GAME_W - 50, GAME_H - 32, "PAUSE", {
+            fontFamily: "monospace", fontSize: "14px", fontStyle: "bold", color: "#ffffff"
+        }).setOrigin(0.5, 0.5).setDepth(101);
+
+        // 3. Add hover effects and click event to the background box
+        this.pauseBtnBg.on("pointerover", () => {
+            this.pauseBtnBg.setFillStyle(0x333344, 0.8);
+            this.pauseBtnText.setColor("#ffcc00");
+        });
+        
+        this.pauseBtnBg.on("pointerout", () => {
+            this.pauseBtnBg.setFillStyle(0x000000, 0.5);
+            this.pauseBtnText.setColor("#ffffff");
+        });
+        
+        this.pauseBtnBg.on("pointerdown", (ptr, localX, localY, event) => {
+            event.stopPropagation(); // Prevents the cannon from firing
+            this.togglePause();
+        });
         // danger line
         this.dangerLine = this.add.rectangle(GAME_W / 2, SHOOT_Y - 40, GAME_W, 2, 0xff0000, 0.3);
 
@@ -302,14 +332,19 @@ class GameScene extends Phaser.Scene {
         // Pause overlay (hidden by default)
         this.pauseOverlay = this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0x000000, 0.7)
             .setDepth(900).setVisible(false);
+            
         this.pauseTitle = this.add.text(GAME_W / 2, GAME_H / 2 - 60, "PAUSED", {
             fontFamily: "monospace", fontSize: "48px", color: "#ffffff",
             stroke: "#00ccff", strokeThickness: 4
         }).setOrigin(0.5).setDepth(901).setVisible(false);
-        this.pauseHint = this.add.text(GAME_W / 2, GAME_H / 2 + 10, "P or ESC to resume", {
-            fontFamily: "monospace", fontSize: "16px", color: "#aaaaaa"
-        }).setOrigin(0.5).setDepth(901).setVisible(false);
-        this.pauseRestart = this.add.text(GAME_W / 2, GAME_H / 2 + 50, "[ R ] Restart", {
+        
+        this.pauseResume = this.add.text(GAME_W / 2, GAME_H / 2 + 10, "[ RESUME ]", {
+            fontFamily: "monospace", fontSize: "18px", fontStyle: "bold", color: "#00ffcc"
+        }).setOrigin(0.5).setDepth(901).setVisible(false)
+            .setInteractive({ useHandCursor: true })
+            .on("pointerdown", () => this.togglePause());
+
+        this.pauseRestart = this.add.text(GAME_W / 2, GAME_H / 2 + 55, "[ R ] Restart", {
             fontFamily: "monospace", fontSize: "16px", color: "#ff5555"
         }).setOrigin(0.5).setDepth(901).setVisible(false)
             .setInteractive({ useHandCursor: true })
@@ -318,7 +353,8 @@ class GameScene extends Phaser.Scene {
                 try { if (typeof stopMusic === "function") stopMusic(); } catch (e) {}
                 this.scene.restart();
             });
-        this.pauseMenu = this.add.text(GAME_W / 2, GAME_H / 2 + 85, "[ M ] Main Menu", {
+            
+        this.pauseMenu = this.add.text(GAME_W / 2, GAME_H / 2 + 95, "[ M ] Main Menu", {
             fontFamily: "monospace", fontSize: "16px", color: "#ffcc00"
         }).setOrigin(0.5).setDepth(901).setVisible(false)
             .setInteractive({ useHandCursor: true })
@@ -566,9 +602,10 @@ class GameScene extends Phaser.Scene {
         if (this.gameOver) return;
         this.isPaused = !this.isPaused;
         const show = this.isPaused;
+        
         this.pauseOverlay.setVisible(show);
         this.pauseTitle.setVisible(show);
-        this.pauseHint.setVisible(show);
+        this.pauseResume.setVisible(show); 
         this.pauseRestart.setVisible(show);
         this.pauseMenu.setVisible(show);
 
